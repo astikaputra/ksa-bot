@@ -1,0 +1,12 @@
+# Konfigurasi Database
+DB_HOST=localhost
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=db_ksa
+
+# Konfigurasi Bot Telegram
+BOT_TOKEN=6189516900:AAHwObM8FQgg0k5v983ALKH-ok4jtB_m1tA
+
+# Konfigurasi Lainnya
+LOG_FILE=log_bot.txt
+ITEMS_PER_PAGE=10
