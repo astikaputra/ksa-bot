@@ -4,7 +4,7 @@ from database import connection, get_nik_from_telegram, get_nama_satuan
 from utils.faktur_generator import generate_nomor_faktur_otomatis
 from utils.helpers import format_rupiah
 
-# State management untuk proses penerimaan
+# State management untuk proses penerimaan barang
 user_states = {}
 paging_states = {}
 
