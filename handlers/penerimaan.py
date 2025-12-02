@@ -1103,3 +1103,622 @@ def simpan_penerimaan_baru(user_id, user_state, source, bot):
     finally:
         if conn and conn.open:
             conn.close()
+
+# ============================ FITUR MANAJEMEN MAPPING PRODUK ============================
+
+def handle_manage_mapping_menu(message, bot):
+    """Menu utama manajemen mapping produk per supplier"""
+    user_id = str(message.from_user.id)
+    
+    # Cek apakah user terdaftar
+    user_data = get_nik_from_telegram(user_id)
+    if not user_data:
+        bot.reply_to(
+            message, 
+            "Data tidak ditemukan\n\nID Telegram Anda tidak terdaftar. Silakan daftar terlebih dahulu.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    conn = connection()
+    if conn is None:
+        bot.reply_to(message, "Koneksi database gagal", parse_mode='Markdown')
+        return
+    
+    try:
+        with conn.cursor() as sql:
+            sql.execute("""
+                SELECT 
+                    s.id AS id_supplier,
+                    s.namasuplier AS nama_supplier,
+                    COUNT(si.id) as total_mapping,
+                    SUM(CASE WHEN si.aktif = 'Y' THEN 1 ELSE 0 END) as aktif_mapping
+                FROM 
+                    tb_suplier s
+                JOIN 
+                    tb_karyawan k ON s.id_karyawan = k.id
+                LEFT JOIN 
+                    tb_suplieritem si ON s.id = si.idsuplier
+                WHERE 
+                    k.id_tele = %s
+                    AND s.aktif = 'Y'
+                    AND k.aktif = 'Y'
+                GROUP BY s.id, s.namasuplier
+                ORDER BY s.namasuplier
+            """, (user_id,))
+            
+            hasil_sql = sql.fetchall()
+            
+            if hasil_sql:
+                # Buat keyboard untuk menu manajemen mapping
+                keyboard = types.InlineKeyboardMarkup(row_width=1)
+                
+                for supplier in hasil_sql:
+                    id_supplier = supplier['id_supplier']
+                    nama_supplier = supplier['nama_supplier']
+                    total_mapping = supplier['total_mapping'] or 0
+                    aktif_mapping = supplier['aktif_mapping'] or 0
+                    
+                    button_text = f"📋 {nama_supplier[:20]} ({aktif_mapping}/{total_mapping})"
+                    button = types.InlineKeyboardButton(
+                        text=button_text,
+                        callback_data=f"manage_mapping_{id_supplier}_page_1"
+                    )
+                    keyboard.add(button)
+                
+                # Tombol kembali
+                keyboard.row(
+                    types.InlineKeyboardButton("🔙 Kembali ke Menu", callback_data="back_to_main_menu")
+                )
+                
+                pesan_balasan = f"⚙️ MANAJEMEN MAPPING PRODUK\n\n"
+                pesan_balasan += f"Nama: **{user_data['nama']}**\n"
+                pesan_balasan += f"Total Supplier: **{len(hasil_sql)}**\n\n"
+                pesan_balasan += "**Pilih supplier untuk kelola mapping:**\n"
+                pesan_balasan += "Format: Nama Supplier (Aktif/Total)\n\n"
+                pesan_balasan += "**Fitur:**\n"
+                pesan_balasan += "• Lihat semua mapping produk\n"
+                pesan_balasan += "• Aktifkan/nonaktifkan mapping\n"
+                pesan_balasan += "• Filter berdasarkan status"
+                
+                bot.send_message(
+                    message.chat.id,
+                    pesan_balasan,
+                    parse_mode='Markdown',
+                    reply_markup=keyboard
+                )
+                
+            else:
+                pesan_balasan = f"⚙️ TIDAK ADA SUPPLIER\n\n"
+                pesan_balasan += f"Nama: **{user_data['nama']}**\n\n"
+                pesan_balasan += "Anda tidak terdaftar sebagai supplier aktif."
+                bot.reply_to(message, pesan_balasan, parse_mode='Markdown')
+            
+    except Exception as e:
+        bot.reply_to(message, f"Error: {str(e)}")
+    finally:
+        if conn and conn.open:
+            conn.close()
+
+#modul tambahan maping item
+
+def handle_manage_mapping_supplier(call, bot):
+    """Handle daftar mapping produk per supplier"""
+    data_parts = call.data.replace('manage_mapping_', '').split('_page_')
+    supplier_id = data_parts[0]
+    page = int(data_parts[1]) if len(data_parts) > 1 else 1
+    
+    conn = connection()
+    if conn is None:
+        bot.answer_callback_query(call.id, "Koneksi database gagal")
+        return
+    
+    try:
+        with conn.cursor() as sql:
+            # Query untuk mendapatkan nama supplier
+            sql.execute("SELECT namasuplier FROM tb_suplier WHERE id = %s", (supplier_id,))
+            supplier_data = sql.fetchone()
+            nama_supplier = supplier_data['namasuplier'] if supplier_data else "Supplier"
+            
+            # Hitung total data untuk paging
+            sql.execute("""
+                SELECT COUNT(*) as total
+                FROM tb_suplieritem si
+                JOIN tbl_produk p ON si.iditem = p.id_produk
+                WHERE si.idsuplier = %s 
+                    AND p.aktif = 'Y'
+            """, (supplier_id,))
+            
+            total_data = sql.fetchone()['total']
+            items_per_page = 10
+            total_pages = max(1, (total_data + items_per_page - 1) // items_per_page)
+            
+            # Validasi page number
+            if page < 1:
+                page = 1
+            elif page > total_pages:
+                page = total_pages
+            
+            # Calculate offset
+            offset = (page - 1) * items_per_page
+            
+            # Query mapping produk dengan paging
+            sql.execute("""
+                SELECT 
+                    si.id as mapping_id,
+                    p.id_produk,
+                    p.nama_produk,
+                    p.deskripsi,
+                    si.harga as harga_beli,
+                    s.satuan as nama_satuan,
+                    si.isi,
+                    si.aktif as status_mapping,
+                    p.stok,
+                    p.harga as harga_jual
+                FROM tb_suplieritem si
+                JOIN tbl_produk p ON si.iditem = p.id_produk
+                LEFT JOIN tb_satuan s ON si.satuan = s.id
+                WHERE si.idsuplier = %s 
+                    AND p.aktif = 'Y'
+                ORDER BY p.nama_produk
+                LIMIT %s OFFSET %s
+            """, (supplier_id, items_per_page, offset))
+            
+            hasil_mapping = sql.fetchall()
+            
+            if hasil_mapping or total_data > 0:
+                # Buat pesan daftar mapping
+                mapping_pesan = f"📋 MAPPING PRODUK - {nama_supplier}\n\n"
+                mapping_pesan += f"**Halaman:** {page}/{total_pages}\n"
+                mapping_pesan += f"**Total Mapping:** {total_data} produk\n\n"
+                
+                if hasil_mapping:
+                    for i, mapping in enumerate(hasil_mapping, 1):
+                        mapping_id = mapping['mapping_id']
+                        nama_produk = mapping['nama_produk'] or "-"
+                        deskripsi = mapping['deskripsi'] or "-"
+                        harga_beli = mapping['harga_beli'] or 0
+                        nama_satuan = mapping['nama_satuan'] or "PCS"
+                        isi = mapping['isi'] or 1
+                        status = mapping['status_mapping']
+                        stok = mapping['stok'] or 0
+                        harga_jual = mapping['harga_jual'] or 0
+                        
+                        # Format harga
+                        harga_beli_rupiah = format_rupiah(harga_beli)
+                        harga_jual_rupiah = format_rupiah(harga_jual)
+                        
+                        # Status icon
+                        status_icon = "✅" if status == 'Y' else "❌"
+                        status_text = "AKTIF" if status == 'Y' else "NON-AKTIF"
+                        
+                        nomor_urutan = i + offset
+                        mapping_pesan += f"**{nomor_urutan}. {nama_produk} {status_icon}**\n"
+                        mapping_pesan += f"   📝 {deskripsi[:30]}{'...' if len(deskripsi) > 30 else ''}\n"
+                        mapping_pesan += f"   💰 Beli: {harga_beli_rupiah} | Jual: {harga_jual_rupiah}\n"
+                        mapping_pesan += f"   📦 Stok: {stok} | Satuan: {nama_satuan} (isi: {isi})\n"
+                        mapping_pesan += f"   🔧 Status: {status_text} | ID Mapping: `{mapping_id}`\n"
+                        mapping_pesan += "   ──────────────\n"
+                else:
+                    mapping_pesan += "📭 Tidak ada data pada halaman ini\n\n"
+                
+                # Buat keyboard dengan tombol toggle untuk setiap produk
+                keyboard = types.InlineKeyboardMarkup(row_width=2)
+                
+                # Tombol untuk setiap produk
+                for i, mapping in enumerate(hasil_mapping, 1):
+                    global_index = i + offset - 1
+                    mapping_id = mapping['mapping_id']
+                    nama_produk = mapping['nama_produk'] or "Produk"
+                    status = mapping['status_mapping']
+                    
+                    status_icon = "✅" if status == 'Y' else "❌"
+                    action = "Nonaktifkan" if status == 'Y' else "Aktifkan"
+                    
+                    button_text = f"{i}. {nama_produk[:15]} {status_icon}"
+                    button = types.InlineKeyboardButton(
+                        text=button_text,
+                        callback_data=f"toggle_mapping_{mapping_id}_{global_index}"
+                    )
+                    keyboard.add(button)
+                
+                # Tombol paging jika ada lebih dari 1 halaman
+                if total_pages > 1:
+                    paging_buttons = []
+                    
+                    # Tombol Previous
+                    if page > 1:
+                        paging_buttons.append(
+                            types.InlineKeyboardButton("⬅️", callback_data=f"manage_mapping_{supplier_id}_page_{page-1}")
+                        )
+                    
+                    # Info halaman
+                    paging_buttons.append(
+                        types.InlineKeyboardButton(f"{page}/{total_pages}", callback_data="no_action")
+                    )
+                    
+                    # Tombol Next
+                    if page < total_pages:
+                        paging_buttons.append(
+                            types.InlineKeyboardButton("➡️", callback_data=f"manage_mapping_{supplier_id}_page_{page+1}")
+                        )
+                    
+                    keyboard.add(*paging_buttons)
+                
+                # Tombol filter dan aksi
+                action_buttons = []
+                action_buttons.append(
+                    types.InlineKeyboardButton("🔄 Refresh", callback_data=f"manage_mapping_{supplier_id}_page_{page}")
+                )
+                action_buttons.append(
+                    types.InlineKeyboardButton("📊 Filter Aktif", callback_data=f"filter_mapping_{supplier_id}_Y_page_1")
+                )
+                action_buttons.append(
+                    types.InlineKeyboardButton("📊 Filter Nonaktif", callback_data=f"filter_mapping_{supplier_id}_N_page_1")
+                )
+                action_buttons.append(
+                    types.InlineKeyboardButton("📋 Semua", callback_data=f"manage_mapping_{supplier_id}_page_1")
+                )
+                keyboard.add(*action_buttons)
+                
+                # Tombol kembali
+                keyboard.row(
+                    types.InlineKeyboardButton("🔙 Kembali ke List", callback_data="back_to_mapping_menu")
+                )
+                
+                # Edit atau kirim pesan baru
+                try:
+                    bot.edit_message_text(
+                        chat_id=call.message.chat.id,
+                        message_id=call.message.message_id,
+                        text=mapping_pesan,
+                        parse_mode='Markdown',
+                        reply_markup=keyboard
+                    )
+                except Exception as e:
+                    bot.send_message(
+                        call.message.chat.id,
+                        mapping_pesan,
+                        parse_mode='Markdown',
+                        reply_markup=keyboard
+                    )
+                
+            else:
+                # Tidak ada mapping sama sekali
+                keyboard_empty = types.InlineKeyboardMarkup()
+                keyboard_empty.row(
+                    types.InlineKeyboardButton("➕ Tambah Mapping Baru", callback_data=f"add_mapping_{supplier_id}")
+                )
+                keyboard_empty.row(
+                    types.InlineKeyboardButton("🔙 Kembali ke List", callback_data="back_to_mapping_menu")
+                )
+                
+                try:
+                    bot.edit_message_text(
+                        chat_id=call.message.chat.id,
+                        message_id=call.message.message_id,
+                        text=f"📋 BELUM ADA MAPPING\n\nSupplier **{nama_supplier}** belum memiliki mapping produk.\n\nKlik tombol dibawah untuk menambahkan mapping baru.",
+                        parse_mode='Markdown',
+                        reply_markup=keyboard_empty
+                    )
+                except Exception as e:
+                    bot.send_message(
+                        call.message.chat.id,
+                        f"📋 BELUM ADA MAPPING\n\nSupplier **{nama_supplier}** belum memiliki mapping produk.\n\nKlik tombol dibawah untuk menambahkan mapping baru.",
+                        parse_mode='Markdown',
+                        reply_markup=keyboard_empty
+                    )
+                
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {str(e)}")
+        print(f"Error in handle_manage_mapping_supplier: {e}")
+    finally:
+        if conn and conn.open:
+            conn.close()
+
+def handle_toggle_mapping(call, bot):
+    """Handle toggle status mapping produk"""
+    data_parts = call.data.replace('toggle_mapping_', '').split('_')
+    if len(data_parts) >= 2:
+        mapping_id = data_parts[0]
+        global_index = int(data_parts[1])
+    else:
+        bot.answer_callback_query(call.id, "Data tidak valid")
+        return
+    
+    # Toggle status di database
+    success, new_status = toggle_mapping_status(mapping_id)
+    
+    if success:
+        # Cari supplier_id dari paging state
+        supplier_id = None
+        current_page = 1
+        if call.message.chat.id in paging_states:
+            supplier_id = paging_states[call.message.chat.id].get('supplier_id')
+            current_page = paging_states[call.message.chat.id].get('current_page', 1)
+        
+        if supplier_id:
+            status_text = "diaktifkan" if new_status == 'Y' else "dinonaktifkan"
+            bot.answer_callback_query(call.id, f"✅ Mapping {status_text}")
+            
+            # Refresh tampilan
+            handle_manage_mapping_supplier(
+                types.CallbackQuery(
+                    id=call.id,
+                    from_user=call.from_user,
+                    message=call.message,
+                    chat_instance=call.chat_instance,
+                    data=f"manage_mapping_{supplier_id}_page_{current_page}"
+                ),
+                bot
+            )
+        else:
+            bot.answer_callback_query(call.id, "Status diubah, refresh manual")
+    else:
+        bot.answer_callback_query(call.id, "❌ Gagal mengubah status")
+
+def toggle_mapping_status(mapping_id):
+    """Toggle status aktif/non-aktif mapping di database"""
+    conn = connection()
+    if conn is None:
+        return False, None
+    
+    try:
+        with conn.cursor() as sql:
+            # Cek status saat ini
+            sql.execute("""
+                SELECT aktif FROM tb_suplieritem 
+                WHERE id = %s
+            """, (mapping_id,))
+            
+            result = sql.fetchone()
+            if not result:
+                return False, None
+            
+            current_status = result['aktif']
+            new_status = 'N' if current_status == 'Y' else 'Y'
+            
+            # Update status
+            sql.execute("""
+                UPDATE tb_suplieritem 
+                SET aktif = %s 
+                WHERE id = %s
+            """, (new_status, mapping_id))
+            
+            conn.commit()
+            return True, new_status
+            
+    except Exception as e:
+        conn.rollback()
+        print(f"Error toggling mapping status: {e}")
+        return False, None
+    finally:
+        if conn and conn.open:
+            conn.close()
+
+def handle_filter_mapping(call, bot):
+    """Handle filter mapping berdasarkan status"""
+    data_parts = call.data.replace('filter_mapping_', '').split('_')
+    if len(data_parts) >= 3:
+        supplier_id = data_parts[0]
+        status_filter = data_parts[1]  # 'Y' atau 'N'
+        page = int(data_parts[3]) if len(data_parts) > 3 else 1
+    else:
+        bot.answer_callback_query(call.id, "Data filter tidak valid")
+        return
+    
+    conn = connection()
+    if conn is None:
+        bot.answer_callback_query(call.id, "Koneksi database gagal")
+        return
+    
+    try:
+        with conn.cursor() as sql:
+            # Query untuk mendapatkan nama supplier
+            sql.execute("SELECT namasuplier FROM tb_suplier WHERE id = %s", (supplier_id,))
+            supplier_data = sql.fetchone()
+            nama_supplier = supplier_data['namasuplier'] if supplier_data else "Supplier"
+            
+            # Hitung total data untuk paging dengan filter
+            sql.execute("""
+                SELECT COUNT(*) as total
+                FROM tb_suplieritem si
+                JOIN tbl_produk p ON si.iditem = p.id_produk
+                WHERE si.idsuplier = %s 
+                    AND p.aktif = 'Y'
+                    AND si.aktif = %s
+            """, (supplier_id, status_filter))
+            
+            total_data = sql.fetchone()['total']
+            items_per_page = 10
+            total_pages = max(1, (total_data + items_per_page - 1) // items_per_page)
+            
+            # Validasi page number
+            if page < 1:
+                page = 1
+            elif page > total_pages:
+                page = total_pages
+            
+            # Calculate offset
+            offset = (page - 1) * items_per_page
+            
+            # Query mapping produk dengan filter status
+            sql.execute("""
+                SELECT 
+                    si.id as mapping_id,
+                    p.id_produk,
+                    p.nama_produk,
+                    p.deskripsi,
+                    si.harga as harga_beli,
+                    s.satuan as nama_satuan,
+                    si.isi,
+                    si.aktif as status_mapping,
+                    p.stok,
+                    p.harga as harga_jual
+                FROM tb_suplieritem si
+                JOIN tbl_produk p ON si.iditem = p.id_produk
+                LEFT JOIN tb_satuan s ON si.satuan = s.id
+                WHERE si.idsuplier = %s 
+                    AND p.aktif = 'Y'
+                    AND si.aktif = %s
+                ORDER BY p.nama_produk
+                LIMIT %s OFFSET %s
+            """, (supplier_id, status_filter, items_per_page, offset))
+            
+            hasil_mapping = sql.fetchall()
+            
+            # Buat pesan dengan filter info
+            filter_text = "AKTIF" if status_filter == 'Y' else "NON-AKTIF"
+            mapping_pesan = f"📋 MAPPING PRODUK - {nama_supplier}\n\n"
+            mapping_pesan += f"**Filter:** {filter_text}\n"
+            mapping_pesan += f"**Halaman:** {page}/{total_pages}\n"
+            mapping_pesan += f"**Total Mapping:** {total_data} produk\n\n"
+            
+            if hasil_mapping:
+                for i, mapping in enumerate(hasil_mapping, 1):
+                    mapping_id = mapping['mapping_id']
+                    nama_produk = mapping['nama_produk'] or "-"
+                    deskripsi = mapping['deskripsi'] or "-"
+                    harga_beli = mapping['harga_beli'] or 0
+                    nama_satuan = mapping['nama_satuan'] or "PCS"
+                    isi = mapping['isi'] or 1
+                    status = mapping['status_mapping']
+                    stok = mapping['stok'] or 0
+                    harga_jual = mapping['harga_jual'] or 0
+                    
+                    # Format harga
+                    harga_beli_rupiah = format_rupiah(harga_beli)
+                    harga_jual_rupiah = format_rupiah(harga_jual)
+                    
+                    # Status icon
+                    status_icon = "✅" if status == 'Y' else "❌"
+                    status_text = "AKTIF" if status == 'Y' else "NON-AKTIF"
+                    
+                    nomor_urutan = i + offset
+                    mapping_pesan += f"**{nomor_urutan}. {nama_produk} {status_icon}**\n"
+                    mapping_pesan += f"   📝 {deskripsi[:30]}{'...' if len(deskripsi) > 30 else ''}\n"
+                    mapping_pesan += f"   💰 Beli: {harga_beli_rupiah} | Jual: {harga_jual_rupiah}\n"
+                    mapping_pesan += f"   📦 Stok: {stok} | Satuan: {nama_satuan} (isi: {isi})\n"
+                    mapping_pesan += f"   🔧 Status: {status_text} | ID Mapping: `{mapping_id}`\n"
+                    mapping_pesan += "   ──────────────\n"
+            else:
+                mapping_pesan += f"📭 Tidak ada mapping {filter_text.lower()}\n\n"
+            
+            # Buat keyboard dengan tombol toggle
+            keyboard = types.InlineKeyboardMarkup(row_width=2)
+            
+            # Tombol untuk setiap produk
+            for i, mapping in enumerate(hasil_mapping, 1):
+                global_index = i + offset - 1
+                mapping_id = mapping['mapping_id']
+                nama_produk = mapping['nama_produk'] or "Produk"
+                status = mapping['status_mapping']
+                
+                status_icon = "✅" if status == 'Y' else "❌"
+                
+                button_text = f"{i}. {nama_produk[:15]} {status_icon}"
+                button = types.InlineKeyboardButton(
+                    text=button_text,
+                    callback_data=f"toggle_mapping_{mapping_id}_{global_index}"
+                )
+                keyboard.add(button)
+            
+            # Tombol paging jika ada lebih dari 1 halaman
+            if total_pages > 1:
+                paging_buttons = []
+                
+                # Tombol Previous
+                if page > 1:
+                    paging_buttons.append(
+                        types.InlineKeyboardButton("⬅️", callback_data=f"filter_mapping_{supplier_id}_{status_filter}_page_{page-1}")
+                    )
+                
+                # Info halaman
+                paging_buttons.append(
+                    types.InlineKeyboardButton(f"{page}/{total_pages}", callback_data="no_action")
+                )
+                
+                # Tombol Next
+                if page < total_pages:
+                    paging_buttons.append(
+                        types.InlineKeyboardButton("➡️", callback_data=f"filter_mapping_{supplier_id}_{status_filter}_page_{page+1}")
+                    )
+                
+                keyboard.add(*paging_buttons)
+            
+            # Tombol filter dan aksi
+            action_buttons = []
+            action_buttons.append(
+                types.InlineKeyboardButton("🔄 Refresh", callback_data=f"filter_mapping_{supplier_id}_{status_filter}_page_{page}")
+            )
+            
+            # Tombol filter lain
+            if status_filter == 'Y':
+                action_buttons.append(
+                    types.InlineKeyboardButton("📊 Filter Nonaktif", callback_data=f"filter_mapping_{supplier_id}_N_page_1")
+                )
+            else:
+                action_buttons.append(
+                    types.InlineKeyboardButton("📊 Filter Aktif", callback_data=f"filter_mapping_{supplier_id}_Y_page_1")
+                )
+            
+            action_buttons.append(
+                types.InlineKeyboardButton("📋 Semua", callback_data=f"manage_mapping_{supplier_id}_page_1")
+            )
+            keyboard.add(*action_buttons)
+            
+            # Tombol kembali
+            keyboard.row(
+                types.InlineKeyboardButton("🔙 Kembali ke List", callback_data="back_to_mapping_menu")
+            )
+            
+            # Edit atau kirim pesan baru
+            try:
+                bot.edit_message_text(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    text=mapping_pesan,
+                    parse_mode='Markdown',
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                bot.send_message(
+                    call.message.chat.id,
+                    mapping_pesan,
+                    parse_mode='Markdown',
+                    reply_markup=keyboard
+                )
+            
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Error: {str(e)}")
+        print(f"Error in handle_filter_mapping: {e}")
+    finally:
+        if conn and conn.open:
+            conn.close()
+
+# ============================ FUNGSI BANTUAN MAPPING ============================
+
+def get_mapping_stats(supplier_id):
+    """Get statistics for mapping produk"""
+    conn = connection()
+    if conn is None:
+        return None
+    
+    try:
+        with conn.cursor() as sql:
+            sql.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN aktif = 'Y' THEN 1 ELSE 0 END) as aktif,
+                    SUM(CASE WHEN aktif = 'N' THEN 1 ELSE 0 END) as nonaktif
+                FROM tb_suplieritem 
+                WHERE idsuplier = %s
+            """, (supplier_id,))
+            
+            return sql.fetchone()
+    except Exception as e:
+        print(f"Error getting mapping stats: {e}")
+        return None
+    finally:
+        if conn and conn.open:
+            conn.close()

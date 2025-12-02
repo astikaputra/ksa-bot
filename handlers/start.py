@@ -21,6 +21,7 @@ Fitur yang tersedia setelah pendaftaran:
 • Kelola Supplier  
 • Penerimaan Barang
 • Cek Stok Produk
+• Kelola Mapping Produk
 
 Klik "Daftar Sekarang" untuk memulai pendaftaran.
 """
@@ -35,6 +36,7 @@ def show_main_menu(message, bot):
         types.KeyboardButton("Supplier Saya"),
         types.KeyboardButton("Penerimaan Barang"),
         types.KeyboardButton("Stok Produk"),
+        types.KeyboardButton("Kelola Mapping"),  # MENU BARU
         types.KeyboardButton("Bantuan")
     ]
     
@@ -49,6 +51,7 @@ Silakan pilih menu yang tersedia:
 • Supplier Saya - Lihat daftar supplier  
 • Penerimaan Barang - Kelola penerimaan barang
 • Stok Produk - Lihat stok produk
+• Kelola Mapping - Aktif/nonaktif mapping produk per supplier
 • Bantuan - Panduan penggunaan
 
 Fitur otomatis:

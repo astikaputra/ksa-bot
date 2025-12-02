@@ -66,3 +66,26 @@ def send_or_edit_message(bot, source, text, reply_markup=None, parse_mode='Markd
             parse_mode=parse_mode,
             reply_markup=reply_markup
         )
+
+def format_mapping_status(mapping_data):
+    """Format mapping data for display"""
+    formatted = []
+    for i, mapping in enumerate(mapping_data, 1):
+        nama_produk = mapping.get('nama_produk', 'Unknown')
+        harga_beli = mapping.get('harga_beli', 0)
+        status = mapping.get('status_mapping', 'N')
+        satuan = mapping.get('nama_satuan', 'PCS')
+        
+        status_icon = "✅" if status == 'Y' else "❌"
+        harga_text = format_rupiah(harga_beli)
+        
+        formatted.append(f"{i}. {nama_produk} {status_icon} - {harga_text}/{satuan}")
+    
+    return "\n".join(formatted)
+
+def get_status_description(status):
+    """Get description for status"""
+    if status == 'Y':
+        return "AKTIF (bisa dipilih untuk penerimaan)"
+    else:
+        return "NON-AKTIF (tidak bisa dipilih untuk penerimaan)"
